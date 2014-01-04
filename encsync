@@ -1,0 +1,367 @@
+#!/usr/bin/perl
+
+use warnings;
+use strict;
+use feature 'say';
+use IO::CaptureOutput qw/capture_exec/;
+use Term::ReadKey;
+
+$|++;
+
+my $version = '1.0';
+
+my $ignore_end_block = 0;
+
+my $debug = 0;
+
+my $tc_file;
+my $mount_folder;
+
+my $base_folder;
+my @folders_and_files;
+
+my %argvconf = (
+	donotsync => 0,
+	forcesync => 0,
+	forcedebug => 0,
+	noumount => 0
+);
+
+parse_config();
+main(@ARGV);
+
+sub main {
+	parse_params(@_);
+	$debug = 1 if $argvconf{forcedebug};
+	mount() unless $argvconf{donotsync};
+	git_init();
+	git_add();
+	git_commit();
+	git_gc();
+	if(sync_is_neccessary() || $argvconf{forcesync}) {
+		sync() unless $argvconf{donotsync};
+	} else {
+		say 'Sync is not neccessary, so synching the files will be skipped.' unless $argvconf{donotsync};
+	}
+}
+
+sub parse_params {
+	foreach (@_) {
+		if($_ =~ /-(?:-)?d(?:onotsync)?/) {
+			$argvconf{donotsync} = 1;
+			$ignore_end_block = 1;
+		} elsif($_ =~ /(?:-{0,2})debug/) {
+			$argvconf{forcedebug} = 1;
+		} elsif ($_  =~ /(?:-{0,2})forcesync/) {
+			$argvconf{forcesync} = 1;
+		} elsif ($_  =~ /(?:-{0,2})noumount/) {
+			$argvconf{noumount} = 1;
+		} else {
+			help(@_);
+		}
+	}
+}
+
+sub exit_without_end_block {
+	foreach (@_) {
+		warn "$_\n";
+	}
+	$ignore_end_block = 1;
+	exit;
+}
+
+sub get_git_hash {
+	my $folder = shift;
+
+	my $data;
+
+	if(-d "$folder/.git") {
+		$data = qx(cd $folder; git rev-parse HEAD; cd -);
+		$data =~ s/^([a-z0-9]{40}).*$/$1/gs;
+
+		unless($data =~ /^[a-z0-9]{40}$/) {
+			$data = '';
+		}
+	}
+	unless($data =~ /^[a-z0-9]{40}$/) {
+		$data = '';
+		warn "$folder is not a git repository.";
+	}
+	return $data;
+}
+
+sub sync_is_neccessary {
+	return 0 if $argvconf{donotsync};
+	my %hashes = (
+		base_folder	=> get_git_hash($base_folder),
+		mount_folder	=> get_git_hash($mount_folder)
+	);
+
+	return 1 if (!$hashes{base_folder} || !$hashes{mount_folder});
+	print "base_folder:\t$hashes{base_folder}\nmount_folder:\t$hashes{mount_folder}\nSync is " if $debug;
+
+	if($hashes{base_folder} eq $hashes{mount_folder}) {
+		print "not neccessary.\n" if $debug;
+		return 0;
+	} else {
+		print "neccessary.\n" if $debug;
+		return 1;
+	}
+}
+
+sub parse_config {
+	say 'Parsing config' if $debug;
+	my $username = getpwuid($<);
+	my $file = "/home/$username/.backuprc";
+	if(-e $file) {
+		my $i = 0;
+		open my $fh, '<', $file;
+		while (<$fh>) {
+			if($_ =~ /^(debug|tc_file|mount_folder|base_folder|folders_and_files)=/) {
+				if($_ =~ /^debug=(.)$/) {
+					$debug = $1;
+				} elsif ($_ =~ /^tc_file=(.*)$/) {
+					my $file = $1;
+					if(-e $file) {
+						$tc_file = $1;
+					} else {
+						exit_without_end_block("TC-File $file could not be found.");
+					}
+				} elsif ($_ =~ /^mount_folder=(\/.*)$/) {
+					my $folder = $1;
+					$mount_folder = $folder;
+				} elsif ($_ =~ /^base_folder=(\/.*)$/) {
+					my $folder = $1;
+					if(-d $folder) {
+						$base_folder = $folder;
+					} else {
+						exit_without_end_block("Base-Folder $folder could not be found.");
+					}
+				} elsif ($_ =~ /^folders_and_files=(.*)$/) {
+					my $line = $1;
+					@folders_and_files = split('; ', $line);
+				}
+			} elsif ($_ =~ /^#/ || $_ =~ /^$/) {
+				# Comments will be ignored.
+			} else {
+				exit_without_end_block("Unknown command-line: $_");
+			}
+			$i++;
+		}
+		close $fh;
+
+		foreach (@folders_and_files) {
+			unless(-d "$base_folder/$_" || -e "$base_folder/$_") {
+				exit_without_end_block("Folder $_ (to be synched) could not be found.");
+			}
+		}
+
+		if($i != 5) {
+			exit_without_end_block("Not all options have gone well. Check the config-file $file for errors.");
+		}
+	} else {
+		exit_without_end_block("Please create the $file-file first. Execute \"encsync help s\" for more instructions.");
+	}
+}
+
+sub sync {
+	say 'Synching files.';
+	print "\n";
+	my $i = 1;
+	foreach (@folders_and_files, '.git') {
+		redo_print("Synching folder/file $i of ".(scalar (@folders_and_files) + 1)." ($_)");
+		run(qq(rsync --progress -arivpu "$base_folder$_" "$mount_folder"));
+		$i++;
+		sleep 1;
+	}
+	print "\n";
+}
+
+
+sub create_commit_message {
+	my (undef, undef, undef, $mday, $mon, $year) = localtime(time);
+	my @abbr = qw(Jan Feb Mar Apr Mai Jun Jul Aug Sep Oct Nov Dec);
+	$year += 1900;
+	my $str = "Backup from $mday. $abbr[$mon], $year\n".
+		"Base-Folder:\n\t$base_folder\n".
+		"Included folders/files: \n\t".join("\n\t", @folders_and_files)."\n";
+	say $str if $debug;
+	return $str;
+}
+
+sub git_commit {
+	say 'Commiting changes.';
+	my $msg = create_commit_message();
+	my $tobackupstring = '"'.join('" "', @folders_and_files).'"';
+	my ($stdout, $stderr, $success, $return_value) = run(qq(cd "$base_folder"; git commit -m "$msg" $tobackupstring; cd -;));
+	if($stdout =~ m#\Qno changes added to commit (use "git add" and/or "git commit -a")\E#) {
+		say "No local Changes, so no new git-commit-id.\n";
+	}
+}
+
+sub git_gc {
+	return if rand > 0.01;
+	say 'Running git gc.';
+	run(qq(cd "$base_folder"; git gc));
+}
+
+sub git_init {
+	say 'Initializing git-repository (just to be sure).';
+	if(-d $base_folder) {
+		run(qq(cd $base_folder; git init;));
+	} else {
+		exit_without_end_block("$base_folder is not a folder.");
+	}
+}
+
+sub git_add {
+	say 'Adding all files that should be monitored.';
+	foreach my $this_folder (@folders_and_files) {
+		if(-d "$base_folder$this_folder") {
+			run(qq(git add "$base_folder$this_folder/*"));
+		} elsif (-e "$base_folder$this_folder") {
+			run(qq(git add "$base_folder$this_folder"));
+		} else {
+			exit_without_end_block("File/Folder $this_folder could not be found.");
+		}
+	}
+}
+
+sub redo_print {
+	my $print = shift;
+
+	my ($wchar, $hchar, $wpixels, $hpixels) = GetTerminalSize();
+
+	my $BACKSPACE = chr(0x08);
+	print $BACKSPACE x $wchar;
+	print $print.(' ' x ($wchar - length($print)));
+}
+
+sub mount {
+	say 'Mounting truecrypt-volume.';
+	run(qq(truecrypt $tc_file $mount_folder));
+}
+
+sub run {
+	my $str = shift;
+
+	say $str if $debug;
+	my ($stdout, $stderr, $success, $return_value) = capture_exec($str);
+	if($debug) {
+		my $delim = ('-=' x 10).'-';
+		if($stdout) {
+			say $stdout;
+			say $delim;
+		}
+		if($stderr) {
+			say $stderr;
+			say $delim;
+		}
+		say "Return-Value: $return_value";
+	}
+
+	if($return_value ne 0) {
+		if($return_value == -1) {
+			exit_without_end_block($str.' could not be executed: One of it`s commands could not be found');
+		} elsif($return_value < 255) {
+			exit_without_end_block("Return-Code $return_value for '$str': Please check it manually.");
+		}
+	}
+
+	return ($stdout, $stderr, $success, $return_value);
+}
+
+sub help {
+	my @params = @_;
+	say 'Help for encsync v. '.$version;
+	say 'Encsync helps you to synchronize files from your local hard drive';
+	say 'to an encrypted truecrypt-drive over the network.';
+	say 'Even if your network traffic is logged, the files are unreadable,';
+	say 'since they are encrypted all the time during network-transfer with';
+	say 'the strength of TrueCrypt.';
+	say '';
+	say 'Call encsync x for more specific help, where x is [r]equirements,';
+	say '[s]etup, [p]arameters, [e]xecuting, [b]ugreport or [a]ll of them.';
+	say '';
+
+	if(grep ($_ =~ /r|a/, @params)) {
+		say 'Requirements:';
+		say '	- TrueCrypt must be installed';
+		say '	- rsync must be installed';
+		say '	- Perl must be installed';
+		say '	- CPAN-Modules IO::CaptureOutput and Term::ReadKey must be installed';
+		say '	- A NAS-drive must be mounted as a normal folder, wherein the';
+		say '	  truecrypt-container must lie';
+		say '';
+	}
+
+	if(grep ($_ =~ /s|a/, @params)) {
+		say 'Setup: ';
+		say '	- A NAS must be installed and mounted, so that it will be accessible';
+		say '	  as a normal folder.';
+		say '	  You might achieve this with the following line in your fstab-file:';
+		say '	  //<NAS IP>/<username> /home/<username>/backup cifs auto,rw,uid=1000,gid=1000,defaults,iocharset=utf8,user=<user>%<password> 0 0';
+		say '	  (though this is just an example file)';
+		say '';
+		say '	- In the mounted folder, there has to be a truecrypt-container';
+		say '	- Setup your ~/.backuprc this way:';
+		say 'debug=<0 or 1>';
+		say 'tc_file=<path to TrueCrypt-container on mounted NAS>';
+		say 'mount_folder=<mountpoint>';
+		say 'base_folder=<home-folder>';
+		say 'folders_and_files=<files you want to backup, seperated by "; ">';
+		say '';
+		say '	  Where debug toggles the debug-outputs on or off,';
+		say '	  tc_file is the path to the TrueCrypt-container';
+		say '	  mount_folder is the path, where the TrueCrypt-Container will be mounted';
+		say '	  base_folder is the main-path this script will back up (e.g. ~)';
+		say '	  folders_and_files is the list of folders and files that will be backed up';
+		say '';
+	}
+
+	if(grep ($_ =~ /p|a/, @params)) {
+		say 'Parameters:';
+		say '	--donotsync, -d: Just executes the git-commands (add, commit, ...)';
+		say '	debug: forces to enable the debug-outputs';
+		say '	--forcesync: if, for whatever reason, the last sync was not completed,';
+		say '	             but git on the backup-media thinks it had, you can force';
+		say '	             to rsync the folders again with this parameter';
+		say '	noumount: do not umount TrueCrypt-drive after synching.';
+		say '';
+	}
+
+	if(grep ($_ =~ /e|a/, @params)) {
+		say 'Execution:';
+		say 'When the .backuprc file is configured (see <encsync help s>), you start the';
+		say 'backup-process by typing';
+		say '	encsync <parameters>';
+		say 'It automatically mounts the TrueCrypt-Drive and starts the backup-progress.';
+		say 'All Parameters are optional.';
+		say '';
+	}
+
+	if(grep ($_ =~ /b|a/, @params)) {
+		say 'Bugreports:';
+		say 'If you encounter any bug, please contact me at <kochnorman@rocketmail.com>';
+		say 'Please describe the bug as detailled as possible and write your report in';
+		say 'english or german.';
+		say '';
+	}
+	exit_without_end_block();
+}
+
+END {
+	if(!$ignore_end_block && $tc_file && !$argvconf{noumount}) {
+		foreach my $n (reverse(0 .. 10)) {
+			redo_print('Umounting device "'.$tc_file.'". Press CTRL+C if you want to cancel the unmount. You have '.$n.' seconds left.');
+			sleep 1;
+		}
+		say "\nOkay. Umounting $tc_file now...";
+
+		my ($stdout, $stderr, $success, $return_value) = run(qq(truecrypt -d $tc_file));
+		if(!$success) {
+			print "Warning: $stderr\nReturn-Value: $return_value";
+		}
+		run(qq(echo 'Done encrypting and synching.' | wall));
+	}
+}
