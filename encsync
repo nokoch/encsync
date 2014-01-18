@@ -9,7 +9,7 @@ use Progressbar;
 
 $|++;
 
-my $version = '1.01';
+my $version = '1.1';
 
 my $ignore_end_block = 0;
 
@@ -20,6 +20,8 @@ my $mount_folder;
 
 my $base_folder;
 my @folders_and_files;
+
+my $device_has_been_mounted;
 
 my %argvconf = (
 	donotsync => 0,
@@ -34,15 +36,20 @@ main(@ARGV);
 sub main {
 	parse_params(@_);
 	$debug = 1 if $argvconf{forcedebug};
-	mount() unless $argvconf{donotsync};
 	git_init();
 	git_add();
 	git_commit();
 	git_gc();
-	if(sync_is_neccessary() || $argvconf{forcesync}) {
-		sync() unless $argvconf{donotsync};
+	if($argvconf{donotsync}) {
+		say 'donotsync enabled. Synching will not be tried.';
 	} else {
-		say 'Sync is not neccessary, so synching the files will be skipped.' unless $argvconf{donotsync};
+		if(sync_is_neccessary() || $argvconf{forcesync}) {
+			mount();
+			$device_has_been_mounted = 1;
+			sync() unless $argvconf{donotsync};
+		} else {
+			say 'Sync is not neccessary, so synching the files will be skipped.' unless $argvconf{donotsync};
+		}
 	}
 }
 
@@ -357,17 +364,19 @@ sub help {
 }
 
 END {
-	if(!$ignore_end_block && $tc_file && !$argvconf{noumount}) {
-		foreach my $n (reverse(0 .. 10)) {
-			Progressbar::redo_print('Umounting device "'.$tc_file.'". Press CTRL+C if you want to cancel the unmount. You have '.$n.' seconds left.');
-			sleep 1;
-		}
-		say "\nOkay. Umounting $tc_file now...";
+	if(!$device_has_been_mounted) {
+		if(!$ignore_end_block && $tc_file && !$argvconf{noumount}) {
+			foreach my $n (reverse(0 .. 10)) {
+				Progressbar::redo_print('Umounting device "'.$tc_file.'". Press CTRL+C if you want to cancel the unmount. You have '.$n.' seconds left.');
+				sleep 1;
+			}
+			say "\nOkay. Umounting $tc_file now...";
 
-		my ($stdout, $stderr, $success, $return_value) = run(qq(truecrypt -d $tc_file));
-		if(!$success) {
-			print "Warning: $stderr\nReturn-Value: $return_value";
+			my ($stdout, $stderr, $success, $return_value) = run(qq(truecrypt -d $tc_file));
+			if(!$success) {
+				print "Warning: $stderr\nReturn-Value: $return_value";
+			}
+			run(qq(echo 'Done encrypting and synching.' | wall));
 		}
-		run(qq(echo 'Done encrypting and synching.' | wall));
 	}
 }
