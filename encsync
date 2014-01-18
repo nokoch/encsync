@@ -5,6 +5,7 @@ use strict;
 use feature 'say';
 use IO::CaptureOutput qw/capture_exec/;
 use Term::ReadKey;
+use Progressbar;
 
 $|++;
 
@@ -168,11 +169,26 @@ sub sync {
 	say 'Synching files.';
 	print "\n";
 	my $i = 1;
+	
+	my $max_filename = 0;
 	foreach (@folders_and_files, '.git') {
-		redo_print("Synching folder/file $i of ".(scalar (@folders_and_files) + 1)." ($_)");
+		$max_filename = length($_) if length($_) > $max_filename;
+	}
+	
+	my $max_number_length = length(scalar(@folders_and_files) + 1);
+	my $pb = Progressbar->new(
+		preprint => "Synching file/folder {$max_filename,filename} ({$max_number_length,this} of {$max_number_length,total}): ",
+		total => scalar(@folders_and_files) + 1,
+		show_percent => 1
+	);
+
+	foreach (@folders_and_files, '.git') {
+		$pb->update('this', $i);
+		$pb->update('filename', "$_");
+		$pb->print_progressbar();
+
 		run(qq(rsync --progress -arivpu "$base_folder$_" "$mount_folder"));
 		$i++;
-		sleep 1;
 	}
 	print "\n";
 }
@@ -225,16 +241,6 @@ sub git_add {
 			exit_without_end_block("File/Folder $this_folder could not be found.");
 		}
 	}
-}
-
-sub redo_print {
-	my $print = shift;
-
-	my ($wchar, $hchar, $wpixels, $hpixels) = GetTerminalSize();
-
-	my $BACKSPACE = chr(0x08);
-	print $BACKSPACE x $wchar;
-	print $print.(' ' x ($wchar - length($print)));
 }
 
 sub mount {
@@ -353,7 +359,7 @@ sub help {
 END {
 	if(!$ignore_end_block && $tc_file && !$argvconf{noumount}) {
 		foreach my $n (reverse(0 .. 10)) {
-			redo_print('Umounting device "'.$tc_file.'". Press CTRL+C if you want to cancel the unmount. You have '.$n.' seconds left.');
+			Progressbar::redo_print('Umounting device "'.$tc_file.'". Press CTRL+C if you want to cancel the unmount. You have '.$n.' seconds left.');
 			sleep 1;
 		}
 		say "\nOkay. Umounting $tc_file now...";
