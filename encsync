@@ -9,7 +9,7 @@ use Progressbar;
 
 $|++;
 
-my $version = '1.0';
+my $version = '1.01';
 
 my $ignore_end_block = 0;
 
