@@ -9,7 +9,7 @@ use Progressbar;
 
 $|++;
 
-my $version = '1.1';
+my $version = '1.15';
 
 my $ignore_end_block = 0;
 
@@ -177,12 +177,8 @@ sub sync {
 	print "\n";
 	my $i = 1;
 	
-	my $max_filename = 0;
-	foreach (@folders_and_files, '.git') {
-		$max_filename = length($_) if length($_) > $max_filename;
-	}
-	
-	my $max_number_length = length(scalar(@folders_and_files) + 1);
+	my ($max_filename, $max_number_length) = get_max_lengths();
+
 	my $pb = Progressbar->new(
 		preprint => "Synching file/folder {$max_filename,filename} ({$max_number_length,this} of {$max_number_length,total}): ",
 		total => scalar(@folders_and_files) + 1,
@@ -190,9 +186,7 @@ sub sync {
 	);
 
 	foreach (@folders_and_files, '.git') {
-		$pb->update('this', $i);
-		$pb->update('filename', "$_");
-		$pb->print_progressbar();
+		progressbar(\$pb, $i, $_);
 
 		run(qq(rsync --progress -arivpu "$base_folder$_" "$mount_folder"));
 		$i++;
@@ -239,7 +233,20 @@ sub git_init {
 
 sub git_add {
 	say 'Adding all files that should be monitored.';
-	foreach my $this_folder (@folders_and_files) {
+
+	my ($max_filename, $max_number_length) = get_max_lengths();
+
+	my $pb = Progressbar->new(
+		preprint => "Synching file/folder {$max_filename,filename} ({$max_number_length,this} of {$max_number_length,total}): ",
+		total => scalar(@folders_and_files) + 1,
+		show_percent => 1
+	);
+
+	foreach (0 .. $#folders_and_files) {
+		my $this_folder = $folders_and_files[$_];
+
+		progressbar(\$pb, $_ + 1, $this_folder);
+
 		if(-d "$base_folder$this_folder") {
 			run(qq(git add "$base_folder$this_folder/*"));
 		} elsif (-e "$base_folder$this_folder") {
@@ -361,6 +368,23 @@ sub help {
 		say '';
 	}
 	exit_without_end_block();
+}
+
+sub get_max_lengths {
+	my $max_filename = 0;
+	foreach (@folders_and_files, '.git') {
+		$max_filename = length($_) if length($_) > $max_filename;
+	}
+	
+	my $max_number_length = length(scalar(@folders_and_files) + 1);
+	return ($max_filename, $max_number_length);
+}
+
+sub progressbar {
+	my ($pb, $nr, $name) = @_;
+	$$pb->update('this', $nr);
+	$$pb->update('filename', $name);
+	$$pb->print_progressbar();
 }
 
 END {
