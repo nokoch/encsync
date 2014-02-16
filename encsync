@@ -9,7 +9,7 @@ use Progressbar;
 
 $|++;
 
-my $version = '1.16';
+my $version = '1.17';
 
 my $ignore_end_block = 0;
 
@@ -44,13 +44,15 @@ sub main {
 		say 'donotsync enabled. Synching will not be tried.';
 	} else {
 		if(sync_is_neccessary() || $argvconf{forcesync}) {
-			mount();
-			$device_has_been_mounted = 1;
-			sync() unless $argvconf{donotsync};
+			if(!$argvconf{donotsync}) {
+				mount();
+				sync();
+			}
 		} else {
 			say 'Sync is not neccessary, so synching the files will be skipped.' unless $argvconf{donotsync};
 		}
 	}
+	exit();
 }
 
 sub parse_params {
@@ -94,7 +96,8 @@ sub get_git_hash {
 			$data = '';
 		}
 	}
-	unless($data =~ /^[a-z0-9]{40}$/) {
+
+	if(!$data || $data !~ /^[a-z0-9]{40}$/) {
 		$data = '';
 		warn "$folder is not a git repository.";
 	}
@@ -261,7 +264,36 @@ sub git_add {
 
 sub mount {
 	say 'Mounting truecrypt-volume.';
-	run(qq(truecrypt $tc_file $mount_folder));
+	if(!-d $mount_folder) {
+		say "Creating Folder $mount_folder" if $debug;
+		run("gksudo mkdir $mount_folder");
+
+	}
+
+	my $is_mounted = 0;
+	my @lines = qx(mount);
+	say 'Checking whether the backup-drive is already mounted or not.' if $debug;
+	foreach (@lines) {
+		say $_ if $debug;
+		if($_ =~ /\Q$mount_folder\E/) {
+			$is_mounted = 1;
+			say "'$_' is the line which seems to describe that $mount_folder is correctly mounted.";
+			last;
+		}
+	}
+
+	if(-d $mount_folder && !$is_mounted && -d "$mount_folder/.git") {
+		exit_without_end_block("$mount_folder/.git exists, but is not on the network-drive. Mount the real drive first");
+	}
+
+	my @ret = run(qq(truecrypt $tc_file $mount_folder));
+	if($debug) {
+		say "Running truecrypt $tc_file $mount_folder";
+		foreach (@ret) {
+			say $_;
+		}
+	}
+	$device_has_been_mounted++;
 }
 
 sub run {
@@ -312,6 +344,7 @@ sub help {
 		say '	- rsync must be installed';
 		say '	- Perl must be installed';
 		say '	- CPAN-Modules IO::CaptureOutput and Term::ReadKey must be installed';
+		say '	- gksudo must be available';
 		say '	- A NAS-drive must be mounted as a normal folder, wherein the';
 		say '	  truecrypt-container must lie';
 		say '';
