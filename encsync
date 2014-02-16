@@ -316,7 +316,7 @@ sub run {
 
 	if($return_value ne 0) {
 		if($return_value == -1) {
-			exit_without_end_block($str.' could not be executed: One of it`s commands could not be found');
+			exit_without_end_block($str.q# could not be executed: One of it's commands could not be found#);
 		} elsif($return_value < 255) {
 			exit_without_end_block("Return-Code $return_value for '$str': Please check it manually.");
 		}
