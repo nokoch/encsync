@@ -9,7 +9,7 @@ use Progressbar;
 
 $|++;
 
-my $version = '1.15';
+my $version = '1.16';
 
 my $ignore_end_block = 0;
 
@@ -85,6 +85,9 @@ sub get_git_hash {
 
 	if(-d "$folder/.git") {
 		$data = qx(cd $folder; git rev-parse HEAD; cd -);
+		if($data =~ /fatal: bad default revision 'HEAD'/) {
+			warn 'For some reason, git commit was not executed. Please commit manually.';
+		}
 		$data =~ s/^([a-z0-9]{40}).*$/$1/gs;
 
 		unless($data =~ /^[a-z0-9]{40}$/) {
@@ -193,7 +196,6 @@ sub sync {
 	}
 	print "\n";
 }
-
 
 sub create_commit_message {
 	my (undef, undef, undef, $mday, $mon, $year) = localtime(time);
